@@ -1,3 +1,4 @@
+# Taken from the kanji grid addon
 import collections
 
 KanjiGroups = collections.namedtuple("KanjiGroups", ["name", "source", "data"])
