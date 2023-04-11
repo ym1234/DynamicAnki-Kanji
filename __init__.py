@@ -50,7 +50,7 @@ class Addon:
             parent=mw,
             op=self.load_ease,
             success=identity
-        ).with_progress().run_in_background()
+        ).run_in_background()
         QueryOp(
             parent=mw,
             op=self.process_subs,
