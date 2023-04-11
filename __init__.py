@@ -4,10 +4,9 @@ from aqt import gui_hooks
 from anki import hooks
 from aqt.operations import QueryOp
 
-import subprocess
-
 import os
 import random
+
 from collections import defaultdict
 from pathlib import Path
 from glob import glob
@@ -18,90 +17,94 @@ from pprint import pprint
 
 import kanji_writing.data
 
-
 ignore = set(data.ignore)
+identity = lambda *args: args
 
 def hhmmss_to_seconds(hh, mm, ss):
     return hh * 60 * 60 + mm * 60 + ss
 
-subs = defaultdict(set)
-def process_subs(col):
-    # subs = defaultdict(list)
-    dirs = ["/home/ym/SSD/Audiobook Collection Part 1"]
-    for i in dirs:
-        for i in map(Path, glob(i + "/**.vtt")):
-            with i.open() as f:
-                content = f.read().split('\n\n')[1:]
-                for z in content:
-                    n = z.strip().split('\n')
-                    start, end = [hhmmss_to_seconds(*map(float, x.split(":"))) for x in n[0].replace(",", ".").split(" --> ")]
-                    line = ''.join(n[1:])
-                    kanji, audio_path = set(line) - ignore, i.parent / (i.stem + '.m4b')
-                    for s in kanji: subs[s].add(((start, end), audio_path, line))
-    print(len(subs))
-    return subs
+MEDIA_EXTENSIONS = ['mkv', 'mp4', 'mp3', 'm4b', 'm4a', 'aac', 'flac']
 
-process_subs(mw.col)
+def get_audio_file(path):
+    path = Path(str(path).split('.')[0])
+    z = [u for ext in MEDIA_EXTENSIONS if ((u := path.with_suffix('.' + ext)).exists())] + ['/dev/null']
+    return z[0]
 
-kanji_ease = None
-def init():
-    def cal_kanji_ease(col):
-        kanji_ease = dict({})
-        for i in map(lambda i: col.get_note(i), col.find_notes('deck:"08. 漢字::漢字 Writing"')):
+def srt_to_timings(content, with_indicies=False):
+    out = []
+    f = 1 if with_indicies else 0
+    for i in content:
+        n = i.strip().split('\n')
+        timings = tuple([hhmmss_to_seconds(*map(float, x.split(":"))) for x in n[f].replace(",", ".").split(" --> ")])
+        out.append((timings, ''.join(n[f+1:])))
+    return out
+
+class Addon:
+    def __init__(self):
+        self.subs = defaultdict(set)
+        self.kanji_ease = dict({})
+        self.ease_max = 0
+        self.config = mw.addonManager.getConfig(__name__)
+
+        QueryOp(
+            parent=mw,
+            op=self.load_ease,
+            success=identity
+        ).with_progress().run_in_background()
+        QueryOp(
+            parent=mw,
+            op=self.process_subs,
+            success=identity
+        ).with_progress().run_in_background()
+
+    def process_subs(self, col):
+        for i in self.config['paths']:
+            for i in map(Path, glob(i + "/**.vtt") + glob(i + "/**.srt")):
+                with i.open() as f:
+                    content = f.read().strip().split('\n\n')
+                    if i.suffix == '.vtt': content = content[1:]
+                    audio_path = get_audio_file(i)
+                    for timings, line in srt_to_timings(content, with_indicies=(i.suffix == '.srt')):
+                        for s in set(line) - ignore: self.subs[s].add((timings, audio_path, line))
+        print(len(self.subs))
+        # return self.subs
+
+    def load_ease(self, col):
+        for i in map(col.get_note, col.find_notes(f'deck:"{self.config["deck"]}"')):
             c = i.cards()[0]
             if c.reps == 0: continue
             for k in set([i for i in i.items() if i[0] == 'Kanji'][0][1]) - ignore:
-                due1 = kanji_ease.get(k, c.due)
-                if c.due <= due1:
-                    kanji_ease[k] = c.due
-        print(len(kanji_ease))
-        return kanji_ease
+                self.kanji_ease[k] = min(self.kanji_ease.get(k, c.due), c.due)
+                self.ease_max = max(self.kanji_ease[k], self.ease_max)
+        print(len(self.kanji_ease))
+        # return (self.kanji_ease, self.ease_max)
 
-    def on_success(x):
-        global kanji_ease
-        kanji_ease = x
-    op = QueryOp(
-        parent=mw,
-        op=cal_kanji_ease,
-        success=on_success,
-    ).with_progress().run_in_background()
+    def dynamic(self, field_text, field_name, filter_name, ctx):
+        if filter_name != "DynamicKanji":
+            return field_text
+        kanji = sorted(set(field_text) - ignore, key=lambda x: self.kanji_ease.get(x, self.ease_max))
+        sentences = reduce(set.intersection, [self.subs[i] for i in kanji])
 
-def dynamic(field_text, field_name, filter_name, ctx):
-    if filter_name != "DynamicKanji":
-        return field_text
-    kanji = sorted(set(field_text) - ignore, key=kanji_ease.__getitem__)
-    sentences = reduce(set.intersection, [subs[i] for i in kanji])
+        n = 0
+        if len(sentences) == 0 and n < len(kanji):
+            sentences = self.subs[kanji[n]]
+            n += 1
+        if n == len(kanji) or len(kanji) == 0: # TODO(YM): No sentences exist in the current database, use the sentence provided in the card
+            return field_text + "No Sentences!"
 
-    n = 0
-    if len(sentences) == 0 and n < len(kanji):
-        sentences = subs[kanji[n]]
-        n += 1
-    if n == len(kanji): # TODO(YM): No sentences exist in the current database, use the sentence provided in the card
-        return field_text + "No Sentences!"
+        def value(x):
+            # return len(x[2])
+            return random.random() * 100
 
-    def value(x):
-        return random.random() * 100
+        timings, file, sentence = sorted(sentences, key=value)[0]
+        if os.path.islink('/tmp/whatever'):
+            os.unlink('/tmp/whatever')
+        os.symlink(file, '/tmp/whatever')
+        # Requires advanced mpv player
+        return sentence + '\n' + f'[sound:/tmp/whatever --vid=no --start=+{timings[0]-0.1} --end=+{timings[1]+0.1}]'
 
-    sentences = sorted(sentences, key=value)
-    temp, file, sentence = sentences[0]
-    start, end = temp
-    if os.path.exists('/tmp/whatever.m4b'):
-        os.unlink('/tmp/whatever.m4b')
-    os.symlink(file, '/tmp/whatever.m4b')
-    # subprocess.call([
-    #     'ffmpeg',
-    #     '-hide_banner',
-    #     '-loglevel', 'error',
-    #     '-y',
-    #     '-i', file,
-    #     '-preset', 'fast',
-    #     '-ss', str(start),
-    #     '-t', str(end - start),
-    #     # '-codec', 'copy',
-    #     '/tmp/whatever.aac',
-    # ])
-    # Requires advanced mpv player
-    return sentence + '\n' + f'[sound:/tmp/whatever.m4b --start=+{start-0.1} --end=+{end+0.1}]'
+def init():
+    addon = Addon()
+    hooks.field_filter.append(addon.dynamic)
 
 gui_hooks.main_window_did_init.append(init)
-hooks.field_filter.append(dynamic)
