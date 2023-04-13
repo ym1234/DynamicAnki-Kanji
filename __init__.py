@@ -10,6 +10,7 @@ import random
 from collections import defaultdict
 from pathlib import Path
 from glob import glob
+from glob import escape
 from collections import defaultdict
 
 from functools import reduce
@@ -24,12 +25,15 @@ kanji_only = lambda x: set(x) - ignore
 def hhmmss_to_seconds(hh, mm, ss):
     return hh * 60 * 60 + mm * 60 + ss
 
-MEDIA_EXTENSIONS = ['mkv', 'mp4', 'mp3', 'm4b', 'm4a', 'aac', 'flac']
+# MEDIA_EXTENSIONS = ['mkv', 'mp4', 'mp3', 'm4b', 'm4a', 'aac', 'flac']
+MEDIA_EXTENSIONS = {'mkv', 'mp4', 'mp3', 'm4b', 'm4a', 'aac', 'flac'}
 
 def get_audio_file(path):
-    path = Path(str(path).split('.')[0])
-    z = [u for ext in MEDIA_EXTENSIONS if ((u := path.with_suffix('.' + ext)).exists())] + ['/dev/null']
-    return z[0]
+    # Hack for file names like 第7.5巻
+    x = str(path).split('.')
+    z = (x[0] + '.' + x[1]) if len(x) > 1 and len(x[1]) > 5 else x[0]
+    y = next(filter(lambda i: i.suffix[1:] in MEDIA_EXTENSIONS, map(Path, glob(escape(z) + ".*"))))
+    return y#  z[0]
 
 def srt_to_timings(content, with_indicies=False):
     out = []
@@ -61,7 +65,7 @@ class Addon:
 
     def process_subs(self, col):
         for i in self.config['paths']:
-            for i in map(Path, glob(i + "/**.vtt") + glob(i + "/**.srt")):
+            for i in map(Path, glob(escape(i) + "/**.vtt") + glob(escape(i) + "/**.srt")):
                 with i.open() as f:
                     content = f.read().strip().split('\n\n')
                     if i.suffix == '.vtt': content = content[1:]
