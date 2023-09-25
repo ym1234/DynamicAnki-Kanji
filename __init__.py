@@ -1,8 +1,14 @@
 from aqt import mw
 from aqt import gui_hooks
 
+from aqt.qt import *
+from aqt.utils import showInfo, qconnect
 from anki import hooks
 from aqt.operations import QueryOp
+
+from re import escape
+
+import gc
 
 import os
 import random
@@ -52,6 +58,7 @@ class Addon:
         self.config = mw.addonManager.getConfig(__name__)
         self.queue = {}
 
+    def start(self):
         QueryOp(
             parent=mw,
             op=self.load_ease,
@@ -62,6 +69,21 @@ class Addon:
             op=self.process_subs,
             success=identity
         ).with_progress().run_in_background()
+
+    def stop(self):
+        del self.config
+        self.config = mw.addonManager.getConfig(__name__)
+        del self.subs
+        self.subs = defaultdict(set)
+        del self.kanji_ease
+        self.kanji_ease = dict({})
+        del self.queue
+        self.queue = {}
+        gc.collect()
+
+    def restart(self):
+        self.stop()
+        self.start()
 
     def process_subs(self, col):
         for i in self.config['paths']:
@@ -111,10 +133,20 @@ class Addon:
         os.symlink(file, '/tmp/whatever')
         # Requires advanced mpv player
         self.queue[card_id] = (sentence, f'[sound:/tmp/whatever --vid=no --start=+{timings[0]-0.1} --end=+{timings[1]+0.1}]')
+        # self.queue[card_id]  = (sentence, f'[sound:"{file}" --vid=no --start=+{timings[0]-0.1} --end=+{timings[1]+0.1}]')
         # return sentence + '\n' + f'[sound:/tmp/whatever --vid=no --start=+{timings[0]-0.1} --end=+{timings[1]+0.1}]'
         return self.queue[card_id][1]
 
 def init():
     addon = Addon()
     hooks.field_filter.append(addon.dynamic)
+    mm = mw.form.menuTools.addMenu("Kanji Writing")
+    def create_action(name, func):
+        a = QAction(name, mw)
+        qconnect(a.triggered, func)
+        mm.addAction(a)
+    create_action("Load Kanji", addon.start)
+    create_action("Free memory", addon.stop)
+    create_action("Restart", addon.restart)
+
 gui_hooks.main_window_did_init.append(init)
